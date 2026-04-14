@@ -1,3 +1,9 @@
+from english_reader_app import main as run_new_app
+
+if __name__ == "__main__":
+    run_new_app()
+    raise SystemExit
+
 import base64
 import json
 import re
