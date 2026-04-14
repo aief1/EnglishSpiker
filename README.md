@@ -1,6 +1,6 @@
 # EnglishSpiker
 
-一个 Windows 桌面小工具：复制英语单词后自动朗读，并显示中文意思。
+一个 Windows 原生桌面小工具：复制英语单词后自动朗读，并显示中文意思。
 
 ## 使用方法
 
@@ -13,7 +13,7 @@
 
 ## 说明
 
-- 朗读使用 Windows 自带语音功能，不需要额外安装 Python 包。
+- 朗读使用 Windows 自带语音功能，项目使用 C# / WPF。
 - 设置菜单里有：显示/隐藏、自动朗读、自动释义、置顶、声音、语速、快捷键、退出。
 - 声音好不好听取决于 Windows 已安装的语音；可以在托盘右键菜单里切换。
 - 中文释义优先使用在线词典接口，网络不可用时会给出提示。
@@ -21,5 +21,11 @@
 ## 命令行启动
 
 ```powershell
-py english_reader_widget.py
+dotnet run --project EnglishSpiker.csproj
+```
+
+## 构建检查
+
+```powershell
+dotnet build EnglishSpiker.csproj
 ```
