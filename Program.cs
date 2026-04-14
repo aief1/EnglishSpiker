@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -34,12 +35,20 @@ internal sealed class MainWindow : Window
 {
     private const int HotkeyId = 9281;
     private const int WmHotkey = 0x0312;
+    private const int WhMouseLl = 14;
+    private const int WmXbuttonDown = 0x020B;
+    private const int Xbutton1 = 0x0001;
+    private const int Xbutton2 = 0x0002;
     private const uint ModAlt = 0x0001;
     private const uint ModControl = 0x0002;
     private const uint ModShift = 0x0004;
 
     private static readonly Dictionary<string, uint> HotkeyModifiers = new()
     {
+        ["None"] = 0,
+        ["Ctrl"] = ModControl,
+        ["Alt"] = ModAlt,
+        ["Shift"] = ModShift,
         ["Ctrl+Alt"] = ModControl | ModAlt,
         ["Ctrl+Shift"] = ModControl | ModShift,
         ["Alt+Shift"] = ModAlt | ModShift,
@@ -61,6 +70,8 @@ internal sealed class MainWindow : Window
 
     private Forms.NotifyIcon? _trayIcon;
     private HwndSource? _source;
+    private LowLevelMouseProc? _mouseProc;
+    private IntPtr _mouseHook = IntPtr.Zero;
     private string _lastClipboardText = "";
     private string _lastLookupWord = "";
     private bool _autoRead = true;
@@ -70,6 +81,10 @@ internal sealed class MainWindow : Window
     private int _rate;
     private string _hotkeyModifier = "Ctrl+Alt";
     private string _hotkeyKey = "R";
+    private string _pendingHotkeyModifier = "Ctrl+Alt";
+    private string _pendingHotkeyKey = "R";
+    private MouseShortcut _mouseShortcut = MouseShortcut.None;
+    private bool _isExiting;
 
     public MainWindow()
     {
@@ -142,7 +157,11 @@ internal sealed class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Padding = new Thickness(8, 0, 0, 0)
         };
-        close.MouseLeftButtonUp += (_, _) => Application.Current.MainWindow.Hide();
+        close.MouseLeftButtonDown += (_, e) =>
+        {
+            Application.Current.MainWindow.Hide();
+            e.Handled = true;
+        };
         Grid.SetColumn(close, 1);
         header.Children.Add(close);
         root.Children.Add(header);
@@ -213,11 +232,16 @@ internal sealed class MainWindow : Window
         _source = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
         _source?.AddHook(WndProc);
         RegisterHotkey();
+        RegisterMouseShortcutHook();
         CreateTrayIcon();
     }
 
     private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
+        if (_isExiting)
+        {
+            return;
+        }
         e.Cancel = true;
         Hide();
     }
@@ -277,9 +301,16 @@ internal sealed class MainWindow : Window
         menu.Items.Add(speedMenu);
 
         menu.Items.Add(new Separator());
-        menu.Items.Add(MenuItem($"设置快捷键：{_hotkeyModifier}+{_hotkeyKey}", ShowHotkeyDialog));
+        menu.Items.Add(MenuItem($"设置快捷键：{HotkeyText()}", ShowHotkeyDialog));
+        var mouseMenu = new MenuItem { Header = $"鼠标侧键：{MouseShortcutText()}" };
+        mouseMenu.Items.Add(MouseShortcutItem("关闭", MouseShortcut.None));
+        mouseMenu.Items.Add(MouseShortcutItem("侧键 1", MouseShortcut.XButton1));
+        mouseMenu.Items.Add(MouseShortcutItem("侧键 2", MouseShortcut.XButton2));
+        menu.Items.Add(mouseMenu);
         menu.Items.Add(new Separator());
         menu.Items.Add(MenuItem("退出程序", ExitApp));
+        menu.PlacementTarget = this;
+        menu.Placement = PlacementMode.MousePoint;
         menu.IsOpen = true;
     }
 
@@ -304,13 +335,20 @@ internal sealed class MainWindow : Window
         return item;
     }
 
+    private MenuItem MouseShortcutItem(string label, MouseShortcut shortcut)
+    {
+        var item = new MenuItem { Header = label, IsCheckable = true, IsChecked = _mouseShortcut == shortcut };
+        item.Click += (_, _) => _mouseShortcut = shortcut;
+        return item;
+    }
+
     private void ShowHotkeyDialog()
     {
         var dialog = new Window
         {
             Title = "设置快捷键",
             Width = 280,
-            Height = 130,
+            Height = 120,
             ResizeMode = ResizeMode.NoResize,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Owner = this,
@@ -318,32 +356,98 @@ internal sealed class MainWindow : Window
             Background = Brush("#f8f9fa")
         };
         var panel = new StackPanel { Margin = new Thickness(14) };
-        panel.Children.Add(new TextBlock
+        var captureText = new TextBlock
         {
-            Text = "重读剪贴板快捷键",
+            Text = $"当前：{HotkeyText()}",
             FontWeight = FontWeights.Bold,
             Foreground = Brush("#2b3437"),
             Margin = new Thickness(0, 0, 0, 10)
+        };
+        panel.Children.Add(captureText);
+
+        panel.Children.Add(new TextBlock
+        {
+            Text = "直接按下新的快捷键就会立即生效，例如 Ctrl+Alt+R 或 F8。字母键需要配合 Ctrl/Alt/Shift。",
+            Foreground = Brush("#586064"),
+            FontSize = 12,
+            TextWrapping = TextWrapping.Wrap
         });
 
-        var row = new StackPanel { Orientation = Orientation.Horizontal };
-        var modifierBox = new ComboBox { Width = 130, ItemsSource = HotkeyModifiers.Keys.ToArray(), SelectedItem = _hotkeyModifier };
-        var keyBox = new ComboBox { Width = 70, ItemsSource = HotkeyKeys, SelectedItem = _hotkeyKey, Margin = new Thickness(8, 0, 0, 0) };
-        row.Children.Add(modifierBox);
-        row.Children.Add(keyBox);
-        panel.Children.Add(row);
-
-        var apply = new Button { Content = "应用", Width = 72, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 12, 0, 0) };
-        apply.Click += (_, _) =>
+        dialog.Content = panel;
+        dialog.PreviewKeyDown += (_, e) =>
         {
-            _hotkeyModifier = modifierBox.SelectedItem?.ToString() ?? "Ctrl+Alt";
-            _hotkeyKey = keyBox.SelectedItem?.ToString() ?? "R";
+            if (!TryCaptureHotkey(e, out var modifier, out var key))
+            {
+                return;
+            }
+            if (modifier == "None" && key.Length == 1)
+            {
+                captureText.Text = "字母键请配合 Ctrl / Alt / Shift，避免影响正常打字。";
+                e.Handled = true;
+                return;
+            }
+            _pendingHotkeyModifier = modifier;
+            _pendingHotkeyKey = key;
+            _hotkeyModifier = _pendingHotkeyModifier;
+            _hotkeyKey = _pendingHotkeyKey;
             RegisterHotkey();
+            captureText.Text = $"将设置为：{FormatHotkey(modifier, key)}";
+            e.Handled = true;
             dialog.Close();
         };
-        panel.Children.Add(apply);
-        dialog.Content = panel;
+        _pendingHotkeyModifier = _hotkeyModifier;
+        _pendingHotkeyKey = _hotkeyKey;
         dialog.ShowDialog();
+    }
+
+    private static bool TryCaptureHotkey(KeyEventArgs e, out string modifierName, out string keyName)
+    {
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        keyName = KeyToHotkeyName(key);
+        modifierName = ModifierKeysToName(Keyboard.Modifiers);
+        return !string.IsNullOrWhiteSpace(keyName);
+    }
+
+    private static string KeyToHotkeyName(Key key)
+    {
+        if (key is Key.LeftCtrl or Key.RightCtrl or Key.LeftAlt or Key.RightAlt or Key.LeftShift or Key.RightShift or Key.LWin or Key.RWin)
+        {
+            return "";
+        }
+        if (key >= Key.A && key <= Key.Z)
+        {
+            return key.ToString();
+        }
+        if (key >= Key.F1 && key <= Key.F12)
+        {
+            return key.ToString();
+        }
+        return "";
+    }
+
+    private static string ModifierKeysToName(ModifierKeys modifiers)
+    {
+        var parts = new List<string>();
+        if (modifiers.HasFlag(ModifierKeys.Control))
+        {
+            parts.Add("Ctrl");
+        }
+        if (modifiers.HasFlag(ModifierKeys.Alt))
+        {
+            parts.Add("Alt");
+        }
+        if (modifiers.HasFlag(ModifierKeys.Shift))
+        {
+            parts.Add("Shift");
+        }
+        return parts.Count == 0 ? "None" : string.Join("+", parts);
+    }
+
+    private string HotkeyText() => FormatHotkey(_hotkeyModifier, _hotkeyKey);
+
+    private static string FormatHotkey(string modifier, string key)
+    {
+        return modifier == "None" ? key : $"{modifier}+{key}";
     }
 
     private void PollClipboard()
@@ -445,6 +549,44 @@ internal sealed class MainWindow : Window
         _statusText.Text = RegisterHotKey(hwnd, HotkeyId, modifiers, key) ? "Listening..." : "Hotkey used";
     }
 
+    private void RegisterMouseShortcutHook()
+    {
+        if (_mouseHook != IntPtr.Zero)
+        {
+            return;
+        }
+        _mouseProc = MouseHookCallback;
+        _mouseHook = SetWindowsHookEx(WhMouseLl, _mouseProc, IntPtr.Zero, 0);
+    }
+
+    private IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        if (nCode >= 0 && wParam.ToInt32() == WmXbuttonDown && _mouseShortcut != MouseShortcut.None)
+        {
+            var info = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
+            var button = (int)((info.mouseData >> 16) & 0xffff);
+            var shouldTrigger =
+                (_mouseShortcut == MouseShortcut.XButton1 && button == Xbutton1) ||
+                (_mouseShortcut == MouseShortcut.XButton2 && button == Xbutton2);
+            if (shouldTrigger)
+            {
+                Dispatcher.BeginInvoke(ReadClipboard);
+                return new IntPtr(1);
+            }
+        }
+        return CallNextHookEx(_mouseHook, nCode, wParam, lParam);
+    }
+
+    private string MouseShortcutText()
+    {
+        return _mouseShortcut switch
+        {
+            MouseShortcut.XButton1 => "侧键 1",
+            MouseShortcut.XButton2 => "侧键 2",
+            _ => "关闭"
+        };
+    }
+
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         if (msg == WmHotkey && wParam.ToInt32() == HotkeyId)
@@ -457,9 +599,15 @@ internal sealed class MainWindow : Window
 
     private void ExitApp()
     {
+        _isExiting = true;
         _clipboardTimer.Stop();
         var hwnd = new WindowInteropHelper(this).Handle;
         UnregisterHotKey(hwnd, HotkeyId);
+        if (_mouseHook != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_mouseHook);
+            _mouseHook = IntPtr.Zero;
+        }
         _trayIcon?.Dispose();
         Application.Current.Shutdown();
     }
@@ -477,6 +625,34 @@ internal sealed class MainWindow : Window
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+    private delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelMouseProc lpfn, IntPtr hMod, uint dwThreadId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MSLLHOOKSTRUCT
+    {
+        public Point pt;
+        public uint mouseData;
+        public uint flags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+}
+
+internal enum MouseShortcut
+{
+    None,
+    XButton1,
+    XButton2
 }
 
 internal sealed record LookupResult(string Word, string Meaning, string Source);

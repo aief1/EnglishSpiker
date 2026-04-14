@@ -24,8 +24,22 @@
 dotnet run --project EnglishSpiker.csproj
 ```
 
+## 直接运行
+
+打包后可以直接双击：
+
+```text
+publish\EnglishSpiker.exe
+```
+
 ## 构建检查
 
 ```powershell
 dotnet build EnglishSpiker.csproj
+```
+
+## 打包
+
+```powershell
+dotnet publish EnglishSpiker.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o publish
 ```
