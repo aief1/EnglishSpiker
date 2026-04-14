@@ -1,4 +1,4 @@
-from english_reader_app import main as run_new_app
+from english_reader_widget import main as run_new_app
 
 if __name__ == "__main__":
     run_new_app()

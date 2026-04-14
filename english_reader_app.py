@@ -1,3 +1,9 @@
+if __name__ == "__main__":
+    from english_reader_widget import main as run_widget
+
+    run_widget()
+    raise SystemExit
+
 import base64
 import ctypes
 import json
