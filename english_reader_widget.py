@@ -270,6 +270,7 @@ class EnglishReaderWidget:
         self.tray: TrayIcon | None = None
 
         self._build_ui()
+        self._build_context_menu()
         self._enable_drag()
         self.root.update_idletasks()
         self.root.attributes("-topmost", True)
@@ -281,6 +282,59 @@ class EnglishReaderWidget:
         self.poll_clipboard()
         self.poll_hotkey()
         self._load_voices()
+
+    def _build_context_menu(self) -> None:
+        self.context_menu = tk.Menu(self.root, tearoff=False)
+        self.voice_menu = tk.Menu(self.context_menu, tearoff=False)
+        self.speed_menu = tk.Menu(self.context_menu, tearoff=False)
+
+    def show_context_menu(self, event: tk.Event | None = None) -> None:
+        self.context_menu.delete(0, "end")
+        self.voice_menu.delete(0, "end")
+        self.speed_menu.delete(0, "end")
+
+        self.context_menu.add_command(label="隐藏窗口" if self.is_visible else "显示窗口", command=self.toggle_window)
+        self.context_menu.add_checkbutton(
+            label="复制后自动朗读",
+            variable=self.auto_clipboard,
+            onvalue=True,
+            offvalue=False,
+        )
+        self.context_menu.add_checkbutton(
+            label="自动显示中文释义",
+            variable=self.auto_lookup,
+            onvalue=True,
+            offvalue=False,
+        )
+        self.context_menu.add_checkbutton(
+            label="窗口始终置顶",
+            variable=self.always_on_top,
+            onvalue=True,
+            offvalue=False,
+            command=lambda: self.root.attributes("-topmost", self.always_on_top.get()),
+        )
+        self.context_menu.add_separator()
+
+        for voice in self.voices:
+            self.voice_menu.add_radiobutton(label=voice, variable=self.voice, value=voice)
+        self.context_menu.add_cascade(label="选择声音", menu=self.voice_menu)
+
+        self.speed_menu.add_radiobutton(label="慢", variable=self.rate, value=-2)
+        self.speed_menu.add_radiobutton(label="正常", variable=self.rate, value=0)
+        self.speed_menu.add_radiobutton(label="快", variable=self.rate, value=2)
+        self.context_menu.add_cascade(label="语速", menu=self.speed_menu)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label=f"设置快捷键：{self.hotkey_text()}", command=self.show_hotkey_dialog)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="退出程序", command=self.exit_app)
+
+        if event:
+            x, y = event.x_root, event.y_root
+        else:
+            x = self.root.winfo_pointerx()
+            y = self.root.winfo_pointery()
+        self.context_menu.tk_popup(x, y)
+        self.context_menu.grab_release()
 
     def _build_ui(self) -> None:
         self.root.configure(bg="#f8f9fa")
@@ -349,6 +403,8 @@ class EnglishReaderWidget:
 
         self.root.bind("<Button-1>", start)
         self.root.bind("<B1-Motion>", move)
+        self.root.bind("<Button-3>", self.show_context_menu)
+        self.root.bind("<Control-Button-1>", self.show_context_menu)
 
     def _load_voices(self) -> None:
         threading.Thread(target=self._load_voices_worker, daemon=True).start()
